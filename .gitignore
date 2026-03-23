@@ -1,0 +1,13 @@
+.DS_Store
+
+# IDE
+.idea/
+
+# Local runtime data
+.ccecho/
+
+# Build outputs
+/ccecho
+*.exe
+*.test
+*.out

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CCECHO VIEWER</title>
+    <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div class="app">
+    <div class="toolbar">
+        <div class="brand">CCECHO VIEWER</div>
+        <div class="toolbar-group">
+            <button class="btn" id="toggle-theme">Theme: AUTO</button>
+            <button class="btn" id="toggle-follow">Follow Latest: ON</button>
+            <button class="btn" id="toggle-refresh">Auto Refresh: ON</button>
+            <button class="btn primary" id="refresh-now">Refresh</button>
+            <span class="meta" id="status-meta">Ready</span>
+        </div>
+    </div>
+    <div class="layout">
+        <div class="left">
+            <div class="panel">
+                <div class="title">Sessions</div>
+                <div class="section">
+                    <input class="input" id="session-filter" placeholder="Filter session...">
+                    <div class="item-list" id="sessions"></div>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="title">Requests</div>
+                <div class="section">
+                    <input class="input" id="request-filter" placeholder="Filter request idx/model...">
+                    <div class="toolbar-group" style="margin-bottom: 8px;">
+                        <button class="btn" id="sort-requests">Sort: ASC</button>
+                    </div>
+                    <div class="item-list" id="items"></div>
+                </div>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="title" id="detail-title">Detail</div>
+            <div class="detail" id="detail">Select one request.</div>
+        </div>
+    </div>
+</div>
+<script src="/assets/app.js"></script>
+</body>
+</html>

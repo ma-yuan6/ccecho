@@ -4,55 +4,95 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
-	"time"
 
+	"claude-proxy-go/internal/config"
 	"claude-proxy-go/internal/state"
 	"claude-proxy-go/internal/viewer"
 )
+
+const version = "1.2.0"
+
+func runVersion() {
+	fmt.Printf("ccecho %s\n", version)
+}
 
 // 命令
 
 func runProxy(args []string) {
 	fs := flag.NewFlagSet("proxy", flag.ExitOnError)
 	proxyAddr := fs.String("proxy-addr", "127.0.0.1:9999", "proxy listen address")
+	proxyCode := fs.String("proxy-code", "", "route code prefix for the proxy base URL")
+	provider := fs.String("provider", config.ProviderClaude, "proxy provider: claude or codex")
+	codexProvider := fs.String("codex-provider", "", "codex provider name from ~/.codex/config.toml")
 	_ = fs.Parse(args)
 
 	app := mustApp()
-	server, session, err := startProxy(app, *proxyAddr)
+	target, err := app.LoadTarget(*provider, *codexProvider)
+	if err != nil {
+		log.Fatal(err)
+	}
+	server, store, session, err := startProxy(app, *proxyAddr, target, *proxyCode)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	logProxySession(session)
 
+	// 阻塞
 	waitForShutdown(func(ctx context.Context) {
-		_ = server.Shutdown(ctx)
+		shutdownProxy(ctx, server, store)
 	})
 }
 
+func runRun(args []string) {
+	provider := config.ProviderClaude
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		provider = args[0]
+		args = args[1:]
+	}
+
+	switch provider {
+	case config.ProviderClaude:
+		runClaude(args)
+	case config.ProviderCodex:
+		runCodex(args)
+	default:
+		log.Fatalf("unsupported run provider: %s", provider)
+	}
+}
+
+// run claude
 func runClaude(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	proxyAddr := fs.String("proxy-addr", "127.0.0.1:9999", "proxy listen address")
+	proxyCode := fs.String("proxy-code", "", "route code prefix for the proxy base URL; empty means auto-generate")
 	_ = fs.Parse(args)
 
 	app := mustApp()
-	server, session, err := startProxy(app, *proxyAddr)
+	target, err := app.LoadTarget(config.ProviderClaude, "")
+	if err != nil {
+		log.Fatal(err)
+	}
+	resolvedProxyCode, err := ensureProxyCode(*proxyCode, true)
+	if err != nil {
+		log.Fatal(err)
+	}
+	server, store, session, err := startProxy(app, *proxyAddr, target, resolvedProxyCode)
 	if err != nil {
 		log.Fatal(err)
 	}
 	runtimeLogFile, restoreLogs, err := redirectLogs(filepath.Join(session.SessionPath, "ccecho.log"))
 	if err != nil {
-		_ = server.Shutdown(context.Background())
+		shutdownProxy(context.Background(), server, store)
 		log.Fatal(err)
 	}
 	defer restoreLogs()
@@ -76,43 +116,81 @@ func runClaude(args []string) {
 	log.Printf("starting: claude %s", strings.Join(claudeArgs, " "))
 
 	if err := cmd.Start(); err != nil {
-		_ = server.Shutdown(context.Background())
+		shutdownProxy(context.Background(), server, store)
 		log.Fatal(err)
 	}
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Wait()
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-
-	select {
-	case sig := <-sigCh:
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(sig)
-		}
-		err = <-errCh
-	case err = <-errCh:
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_ = server.Shutdown(ctx)
-
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.ExitCode())
-		}
-		log.Fatal(err)
-	}
+	// 阻塞
+	err = waitCommandAndShutdown(cmd, func(ctx context.Context) {
+		shutdownProxy(ctx, server, store)
+	})
+	exitOnCommandError(err)
 }
 
-func runShow(args []string) {
-	fs := flag.NewFlagSet("show", flag.ExitOnError)
+// run codex
+func runCodex(args []string) {
+	fs := flag.NewFlagSet("run codex", flag.ExitOnError)
+	proxyAddr := fs.String("proxy-addr", "127.0.0.1:9999", "proxy listen address")
+	proxyCode := fs.String("proxy-code", "", "route code prefix for the proxy base URL; empty means auto-generate")
+	providerName := fs.String("provider", "", "codex provider name from ~/.codex/config.toml")
+	_ = fs.Parse(args)
+
+	app := mustApp()
+	target, err := app.LoadTarget(config.ProviderCodex, *providerName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	codexConfig, err := app.LoadCodexConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+	// 将 codex 实际的provider取出
+	providerCfg, ok := codexConfig.ModelProviders[target.Name]
+	if !ok {
+		log.Fatalf("codex provider %q not found in %s", target.Name, app.CodexConfigPath())
+	}
+	resolvedProxyCode, err := ensureProxyCode(*proxyCode, true)
+	if err != nil {
+		log.Fatal(err)
+	}
+	server, store, session, err := startProxy(app, *proxyAddr, target, resolvedProxyCode)
+	if err != nil {
+		log.Fatal(err)
+	}
+	runtimeLogFile, restoreLogs, err := redirectLogs(filepath.Join(session.SessionPath, "ccecho.log"))
+	if err != nil {
+		shutdownProxy(context.Background(), server, store)
+		log.Fatal(err)
+	}
+	defer restoreLogs()
+	defer func() {
+		_ = runtimeLogFile.Close()
+	}()
+
+	printRunBanner(os.Stderr, session, runtimeLogFile.Name())
+
+	codexArgs := append(codexBaseURLOverrideArgs(target.Name, session.LocalBaseURL, providerCfg), fs.Args()...)
+	cmd := exec.Command("codex", codexArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	log.Printf("starting: codex %s", strings.Join(codexArgs, " "))
+
+	if err := cmd.Start(); err != nil {
+		shutdownProxy(context.Background(), server, store)
+		log.Fatal(err)
+	}
+
+	// 阻塞
+	err = waitCommandAndShutdown(cmd, func(ctx context.Context) {
+		shutdownProxy(ctx, server, store)
+	})
+	exitOnCommandError(err)
+}
+
+func runView(args []string) {
+	fs := flag.NewFlagSet("view", flag.ExitOnError)
 	viewerAddr := fs.String("viewer-addr", "127.0.0.1:18080", "viewer listen address")
 	_ = fs.Parse(args)
 
@@ -140,6 +218,7 @@ func runShow(args []string) {
 		}
 	}()
 
+	// 阻塞
 	waitForShutdown(func(ctx context.Context) {
 		_ = server.Shutdown(ctx)
 	})

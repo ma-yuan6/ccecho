@@ -9,12 +9,17 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "--version", "version", "-v":
+		runVersion()
+		return
 	case "proxy":
 		runProxy(os.Args[2:])
 	case "run":
-		runClaude(os.Args[2:])
-	case "show":
-		runShow(os.Args[2:])
+		runRun(os.Args[2:])
+	case "codex":
+		runCodex(os.Args[2:])
+	case "view":
+		runView(os.Args[2:])
 	case "clean":
 		runClean(os.Args[2:])
 	default:

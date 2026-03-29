@@ -2,30 +2,26 @@ package viewer
 
 import (
 	"encoding/json"
-	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
-	"strings"
 
 	"claude-proxy-go/internal/requestview"
-	"claude-proxy-go/internal/stream"
+	"claude-proxy-go/internal/sessionmeta"
 )
 
-var idxPattern = regexp.MustCompile(`(\d+)`)
-
+// Service 提供日志会话查看页及对应的 JSON API。
 type Service struct {
 	logDir string
 }
 
+// NewService 创建一个基于日志目录的 viewer 服务。
 func NewService(logDir string) *Service {
 	return &Service{logDir: logDir}
 }
 
+// Register 将 viewer 页面和 API 注册到传入的 ServeMux。
 func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(mustAssetSubtree()))))
@@ -35,6 +31,7 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/detail/", s.handleItemDetail)
 }
 
+// handleIndex 返回内嵌的 viewer 首页资源。
 func (s *Service) handleIndex(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data, err := assetFS.ReadFile("assets/index.html")
@@ -45,32 +42,30 @@ func (s *Service) handleIndex(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(data)
 }
 
+// handleStatus 返回最近一次会话的简要状态。
 func (s *Service) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, s.status())
 }
 
+// handleSessions 返回所有可用会话的摘要列表。
 func (s *Service) handleSessions(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, s.sessions())
 }
 
+// handleSessionItems 返回指定会话中的请求条目列表。
 func (s *Service) handleSessionItems(w http.ResponseWriter, r *http.Request) {
 	name := stringsTrimPrefix(r.URL.Path, "/api/session/")
 	writeJSON(w, s.sessionItems(name))
 }
 
+// handleItemDetail 返回指定会话中单条请求的完整详情。
 func (s *Service) handleItemDetail(w http.ResponseWriter, r *http.Request) {
-	parts := splitPath(stringsTrimPrefix(r.URL.Path, "/api/detail/"))
-	if len(parts) != 2 {
+	session, idx, ok := parseDetailPath(stringsTrimPrefix(r.URL.Path, "/api/detail/"))
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	idx, err := strconv.Atoi(parts[1])
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-
-	item, ok := s.itemDetail(parts[0], idx)
+	item, ok := s.itemDetail(session, idx)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -78,6 +73,7 @@ func (s *Service) handleItemDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, item)
 }
 
+// sessions 扫描日志目录并返回所有可展示的会话，按会话名倒序排列。
 func (s *Service) sessions() []SessionSummary {
 	entries, err := os.ReadDir(s.logDir)
 	if err != nil {
@@ -89,13 +85,18 @@ func (s *Service) sessions() []SessionSummary {
 			continue
 		}
 		dir := filepath.Join(s.logDir, entry.Name())
+		meta, err := sessionmeta.Read(dir)
+		if err != nil {
+			continue
+		}
 		count := len(globNames(dir, "request*.json"))
-		result = append(result, SessionSummary{Name: entry.Name(), Count: count})
+		result = append(result, SessionSummary{Name: entry.Name(), Count: count, Provider: meta.Provider})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name > result[j].Name })
 	return result
 }
 
+// status 返回最新会话的状态摘要，供首页快速轮询使用。
 func (s *Service) status() ViewerStatus {
 	sessions := s.sessions()
 	if len(sessions) == 0 {
@@ -110,8 +111,12 @@ func (s *Service) status() ViewerStatus {
 	}
 }
 
+// sessionItems 读取指定会话下的请求文件，并构造成 viewer 列表项。
 func (s *Service) sessionItems(session string) []LogItemSummary {
-	dir := filepath.Join(s.logDir, session)
+	dir, meta, ok := s.loadSessionMeta(session)
+	if !ok {
+		return nil
+	}
 	files := globNames(dir, "request*.json")
 	items := make([]LogItemSummary, 0, len(files))
 	for _, name := range files {
@@ -119,40 +124,39 @@ func (s *Service) sessionItems(session string) []LogItemSummary {
 		if idx == 0 {
 			continue
 		}
-		req, err := requestview.ParseRequestFile(filepath.Join(dir, name), "")
+		req, err := requestview.ParseRequestFile(filepath.Join(dir, name), "", meta.Provider)
 		if err != nil {
 			continue
 		}
-		items = append(items, LogItemSummary{Idx: idx, Model: req.Model})
+		items = append(items, LogItemSummary{Idx: idx, Model: req.Model, Provider: meta.Provider})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Idx < items[j].Idx })
 	return items
 }
 
+// itemDetail 组合单条请求的请求体、增量消息和响应内容。
 func (s *Service) itemDetail(session string, idx int) (LogItemDetail, bool) {
-	dir := filepath.Join(s.logDir, session)
-	requestPath := filepath.Join(dir, fmt.Sprintf("request%d.json", idx))
+	dir, meta, ok := s.loadSessionMeta(session)
+	if !ok {
+		return LogItemDetail{}, false
+	}
+	requestPath := requestFilePath(dir, idx)
 	if _, err := os.Stat(requestPath); err != nil {
 		return LogItemDetail{}, false
 	}
 
-	previousPath := ""
-	if idx > 1 {
-		path := filepath.Join(dir, fmt.Sprintf("request%d.json", idx-1))
-		if _, err := os.Stat(path); err == nil {
-			previousPath = path
-		}
-	}
+	previousPath := previousRequestFilePath(dir, idx)
 
-	req, err := requestview.ParseRequestFile(requestPath, previousPath)
+	req, err := requestview.ParseRequestFile(requestPath, previousPath, meta.Provider)
 	if err != nil {
 		return LogItemDetail{}, false
 	}
 
-	resp, raw := s.readResponse(dir, idx)
+	resp, raw := s.readResponse(dir, idx, meta.Provider)
 	return LogItemDetail{
 		Idx:                    idx,
 		Model:                  req.Model,
+		Provider:               meta.Provider,
 		RequestJSON:            req.Raw,
 		RequestMessageCount:    req.MessageCount,
 		RequestNewMessageCount: len(req.NewMessages),
@@ -163,97 +167,33 @@ func (s *Service) itemDetail(session string, idx int) (LogItemDetail, bool) {
 	}, true
 }
 
-func (s *Service) readResponse(dir string, idx int) (stream.ParsedResponse, []byte) {
-	streamPath := filepath.Join(dir, fmt.Sprintf("response%d.stream", idx))
-	if parsed, raw, err := stream.ParseFile(streamPath); err == nil {
+// readResponse 优先读取流式响应文件；如果不存在或解析失败，再回退到最终 JSON 响应文件。
+func (s *Service) readResponse(dir string, idx int, provider string) (ParsedResponse, []byte) {
+	streamPath := responseStreamFilePath(dir, idx)
+	if parsed, raw, err := ParseFileForProvider(streamPath, provider); err == nil {
 		return parsed, raw
 	}
 
-	jsonPath := filepath.Join(dir, fmt.Sprintf("response%d.json", idx))
+	jsonPath := responseJSONFilePath(dir, idx)
 	if raw, err := os.ReadFile(jsonPath); err == nil {
-		if parsed, parseErr := stream.ParseMessageJSON(filepath.Base(jsonPath), raw); parseErr == nil {
+		if parsed, parseErr := ParseMessageJSONForProvider(filepath.Base(jsonPath), raw, provider); parseErr == nil {
 			return parsed, raw
 		}
-		var parsed stream.ParsedResponse
+		var parsed ParsedResponse
 		if json.Unmarshal(raw, &parsed) == nil {
 			return parsed, raw
 		}
 	}
 
-	return stream.ParsedResponse{}, nil
+	return ParsedResponse{}, nil
 }
 
-func globNames(dir string, pattern string) []string {
-	matches, _ := filepath.Glob(filepath.Join(dir, pattern))
-	names := make([]string, 0, len(matches))
-	for _, match := range matches {
-		names = append(names, filepath.Base(match))
-	}
-	sort.Strings(names)
-	return names
-}
-
-func extractIdx(name string) int {
-	match := idxPattern.FindStringSubmatch(name)
-	if len(match) != 2 {
-		return 0
-	}
-	idx, _ := strconv.Atoi(match[1])
-	return idx
-}
-
-func latestUpdatedAt(dir string) int64 {
-	info, err := os.Stat(dir)
+// loadSessionMeta 解析指定会话目录的元信息；不存在或损坏时返回 false。
+func (s *Service) loadSessionMeta(session string) (string, sessionmeta.Meta, bool) {
+	dir := filepath.Join(s.logDir, session)
+	meta, err := sessionmeta.Read(dir)
 	if err != nil {
-		return 0
+		return "", sessionmeta.Meta{}, false
 	}
-	latest := info.ModTime().Unix()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return latest
-	}
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if ts := info.ModTime().Unix(); ts > latest {
-			latest = ts
-		}
-	}
-	return latest
-}
-
-func writeJSON(w http.ResponseWriter, value any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(value)
-}
-
-func stringsTrimPrefix(value string, prefix string) string {
-	if len(value) >= len(prefix) && value[:len(prefix)] == prefix {
-		return value[len(prefix):]
-	}
-	return value
-}
-
-func splitPath(path string) []string {
-	raw := filepath.Clean(path)
-	if raw == "." || raw == "/" {
-		return nil
-	}
-	parts := make([]string, 0)
-	for _, item := range strings.Split(raw, string(filepath.Separator)) {
-		if item != "" && item != "." {
-			parts = append(parts, item)
-		}
-	}
-	return parts
-}
-
-func mustAssetSubtree() fs.FS {
-	subtree, err := fs.Sub(assetFS, "assets")
-	if err != nil {
-		panic(err)
-	}
-	return subtree
+	return dir, meta, true
 }

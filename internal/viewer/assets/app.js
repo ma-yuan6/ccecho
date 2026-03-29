@@ -4,10 +4,8 @@ let currentItemIdx = null;
 let lastStatusKey = "";
 let followLatest = true;
 let autoRefresh = false;
-let requestSort = "asc";
 let themeMode = "auto";
 let sessionFilter = "";
-let requestFilter = "";
 let copySeq = 0;
 const copyRegistry = {};
 let isSelectingSession = false;
@@ -127,25 +125,14 @@ function updateControlLabels() {
     document.getElementById("toggle-theme").textContent = "Theme: " + themeMode.toUpperCase();
     document.getElementById("toggle-follow").textContent = "Follow Latest: " + (followLatest ? "ON" : "OFF");
     document.getElementById("toggle-refresh").textContent = "Auto Refresh: " + (autoRefresh ? "ON" : "OFF");
-    document.getElementById("sort-requests").textContent = "Sort: " + requestSort.toUpperCase();
 }
 
-function getFilteredAndSortedItems() {
-    let items = Array.isArray(currentItems) ? currentItems.slice() : [];
-    const term = requestFilter.trim().toLowerCase();
-    if (term) {
-        items = items.filter(it => {
-            const idx = String(it.idx || "");
-            const model = String(it.model || "").toLowerCase();
-            return idx.includes(term) || model.includes(term);
-        });
-    }
-    items.sort((a, b) => requestSort === "asc" ? a.idx - b.idx : b.idx - a.idx);
-    return items;
+function getVisibleItems() {
+    return Array.isArray(currentItems) ? currentItems.slice() : [];
 }
 
 function nextItemIdx(offset) {
-    const list = getFilteredAndSortedItems();
+    const list = getVisibleItems();
     if (!list.length) return null;
     const at = list.findIndex(it => it.idx === currentItemIdx);
     if (at < 0) return list[0].idx;
@@ -180,7 +167,7 @@ async function loadSessions(options = {}) {
         const d = document.createElement("div");
         d.className = "item";
         if (s.name === currentSession) d.classList.add("active");
-        d.innerHTML = '<div class="meta">Session</div><div class="session-name">' + escapeHtml(s.name) + '</div><div class="meta" style="margin-top:6px;">' + escapeHtml(String(s.count)) + ' requests</div>';
+        d.innerHTML = '<div class="meta">Session</div><div class="session-name">' + escapeHtml(s.name) + '</div><div class="meta" style="margin-top:6px;">' + escapeHtml(String(s.provider)) + ' · ' + escapeHtml(String(s.count)) + ' requests</div>';
         d.onclick = () => selectSession(s.name, d);
         box.appendChild(d);
         if ((currentSession && s.name === currentSession) || (!currentSession && idx === 0) || (preferLatest && idx === 0)) {
@@ -215,8 +202,8 @@ async function renderItems(options = {}) {
     const preferLatest = !!options.preferLatest;
     const box = document.getElementById("items");
     box.innerHTML = "";
-    const items = getFilteredAndSortedItems();
-    const preferLatestIdx = preferLatest && items.length ? (requestSort === "asc" ? items[items.length - 1].idx : items[0].idx) : null;
+    const items = getVisibleItems();
+    const preferLatestIdx = preferLatest && items.length ? items[items.length - 1].idx : null;
     if (!items.length) {
         box.innerHTML = '<div class="empty">(no requests)</div>';
         document.getElementById("detail").innerHTML = "<pre>No request items in this session.</pre>";
@@ -228,7 +215,7 @@ async function renderItems(options = {}) {
         const d = document.createElement("div");
         d.className = "item";
         if (currentItemIdx === it.idx) d.classList.add("active");
-        d.innerHTML = '<div class="request-row"><span class="request-id">#' + escapeHtml(String(it.idx)) + '</span><span class="request-model">' + escapeHtml(it.model || "unknown") + "</span></div>";
+        d.innerHTML = '<div class="request-row"><span class="request-id">#' + escapeHtml(String(it.idx)) + '</span><span class="request-model">' + escapeHtml(it.provider) + ' · ' + escapeHtml(it.model || "unknown") + "</span></div>";
         d.onclick = () => selectItem(it.idx, d);
         box.appendChild(d);
         if ((currentItemIdx && currentItemIdx === it.idx) || (!currentItemIdx && idx === 0) || (preferLatestIdx !== null && it.idx === preferLatestIdx)) {
@@ -249,7 +236,7 @@ async function selectItem(idx, element) {
     element.classList.add("active");
     try {
         const it = await fetchJson("/api/detail/" + encodeURIComponent(currentSession) + "/" + idx);
-        document.getElementById("detail-title").textContent = "Detail #" + it.idx + " " + (it.model || "");
+        document.getElementById("detail-title").textContent = "Detail #" + it.idx + " " + it.provider + " " + (it.model || "");
         document.getElementById("detail").innerHTML = renderDetail(it);
     } catch (err) {
         document.getElementById("detail").innerHTML = "<pre>" + escapeHtml(err.message || String(err)) + "</pre>";
@@ -265,28 +252,36 @@ function renderDetail(it) {
     const rawFallback = !hasBlocks && it.response_raw ? renderRawResponseCard(it.response_raw) : "";
     return '<div class="status-bar"><div><div class="meta">Current Session</div><div>' + escapeHtml(currentSession || "-") + '</div></div><div class="status-actions"><span class="pill">Auto refresh ' + (autoRefresh ? "ON" : "OFF") + '</span><button class="btn' + prevDisabled + '" onclick="goPrevItem()">Prev</button><button class="btn' + nextDisabled + '" onclick="goNextItem()">Next</button></div></div>' +
         renderRequestCard(it) +
-        renderResponseOverview(it) +
         renderResponseBlocksCard(it.response_blocks || []) +
+        renderResponseOverview(it) +
         rawFallback;
 }
 
 function renderRequestCard(it) {
     const data = safeJsonParse(it.request_json || "{}", {});
-    // Back-end diffs current vs previous request and sends only the incremental messages.
-    const messages = Array.isArray(it.request_new_messages) ? it.request_new_messages : (Array.isArray(data.messages) ? data.messages : []);
+    const items = Array.isArray(it.request_new_messages) ? it.request_new_messages : [];
     const summary = '<div class="summary">' +
+        summaryItem("provider", it.provider) +
         summaryItem("model", data.model || "-") +
         summaryItem("messages_total", it.request_message_count || 0) +
-        summaryItem("messages_new", it.request_new_message_count || messages.length) +
-        summaryItem("tools", Array.isArray(data.tools) ? data.tools.length : 0) +
+        summaryItem("messages_new", it.request_new_message_count || items.length) +
         "</div>";
-    const body = messages.map((m, i) => renderMessageCard(m, i)).join("") || "<pre>(no new messages)</pre>";
+    const body = items.map((item, i) => renderRequestItemCard(item, i)).join("") || "<pre>(no new request items)</pre>";
     const rawRequest = tryFormatJSON(it.request_json || "");
-    return '<div class="card"><div class="card-head"><div>Request Increment</div><div>Only new messages</div></div><div class="card-body">' + summary + body + '<details><summary>Show raw request JSON</summary>' + renderPreWithCopy(rawRequest, rawRequest) + "</details></div></div>";
+    return '<div class="card"><div class="card-head"><div>Request Increment</div><div>Only new meassages</div></div><div class="card-body">' + summary + body + '<details><summary>Show raw request JSON</summary>' + renderPreWithCopy(rawRequest, rawRequest) + "</details></div></div>";
 }
 
 function summaryItem(name, value) {
     return '<div class="summary-item"><div class="summary-name">' + escapeHtml(String(name)) + '</div><div class="summary-value">' + escapeHtml(String(value)) + "</div></div>";
+}
+
+function renderRequestItemCard(item, idx) {
+    const type = String((item && item.type) || "unknown");
+    if (type === "message" || (item && (item.role || Array.isArray(item.content)))) {
+        return renderMessageCard(item, idx);
+    }
+    const head = type.toUpperCase() + (item && item.role ? " / " + String(item.role).toUpperCase() : "");
+    return '<details class="message-card"><summary class="message-head message-summary"><span>' + escapeHtml(head) + "</span><span>#" + (idx + 1) + '</span></summary><div class="message-body">' + renderGenericRequestItem(item) + "</div></details>";
 }
 
 function renderMessageCard(message, idx) {
@@ -295,16 +290,38 @@ function renderMessageCard(message, idx) {
     return '<details class="message-card"><summary class="message-head message-summary"><span>' + escapeHtml(role.toUpperCase()) + "</span><span>#" + (idx + 1) + '</span></summary><div class="message-body">' + (content.map((b, i) => renderContentBlock(b, i)).join("") || "<pre>(empty content)</pre>") + "</div></details>";
 }
 
+function renderGenericRequestItem(item) {
+    const copy = formatAnyJSON(item);
+    return renderPreWithCopy(copy, copy);
+}
+
 function renderContentBlock(block, idx) {
     const type = String((block && block.type) || "unknown");
     let body = "";
-    if (type === "text") body = escapeHtml(block.text || "");
+    if (type === "text" || type === "input_text" || type === "output_text") body = escapeHtml(block.text || "");
     else if (type === "thinking") body = escapeHtml(block.thinking || "");
+    else if (type === "reasoning") {
+        const summary = Array.isArray(block.summary) ? block.summary.map(part => part && part.text ? part.text : "").join("\n") : "";
+        body = escapeHtml(summary || block.summary_text || "");
+    }
     else if (type === "tool_use") {
         const content = formatAnyJSON({
             name: block.name,
             id: block.id,
             input: block.input
+        });
+        body = "<pre>" + escapeHtml(content || "") + "</pre>";
+    } else if (type === "function_call") {
+        const content = formatAnyJSON({
+            name: block.name,
+            call_id: block.call_id,
+            arguments: safeJsonParse(block.arguments || "null", block.arguments || "")
+        });
+        body = "<pre>" + escapeHtml(content || "") + "</pre>";
+    } else if (type === "function_call_output") {
+        const content = formatAnyJSON({
+            call_id: block.call_id,
+            output: safeJsonParse(block.output || "null", block.output || "")
         });
         body = "<pre>" + escapeHtml(content || "") + "</pre>";
     } else if (type === "tool_result") {
@@ -333,7 +350,7 @@ function renderResponseBlocksCard(blocks) {
         const rendered = shouldHighlightAsErrorJSON(text) ? renderJSONBlock(text, true) : renderJSONBlock(text, false);
         return '<div class="response-block response-' + sanitizeClassName(type) + '"><div class="response-head"><span>' + escapeHtml(type.toUpperCase()) + "</span><span>#" + escapeHtml(String(block.index || 0)) + '</span></div><div class="response-content">' + rendered + "</div></div>";
     }).join("") || "<pre>(empty response)</pre>";
-    return '<div class="card"><div class="card-head"><div>Response Blocks</div><div>Parsed from stream</div></div><div class="card-body">' + body + "</div></div>";
+    return '<div class="card"><div class="card-head"><div>Response Blocks</div><div>Parsed output</div></div><div class="card-body">' + body + "</div></div>";
 }
 
 function renderRawResponseCard(raw) {
@@ -417,22 +434,9 @@ document.getElementById("refresh-now").onclick = async () => {
     await refreshStatus(true);
 };
 
-document.getElementById("sort-requests").onclick = async () => {
-    requestSort = requestSort === "asc" ? "desc" : "asc";
-    updateControlLabels();
-    currentItemIdx = null;
-    await renderItems({preferLatest: true});
-};
-
 document.getElementById("session-filter").addEventListener("input", async e => {
     sessionFilter = String(e.target.value || "");
     await loadSessions();
-});
-
-document.getElementById("request-filter").addEventListener("input", async e => {
-    requestFilter = String(e.target.value || "");
-    currentItemIdx = null;
-    await renderItems({preferLatest: true});
 });
 
 document.addEventListener("keydown", async e => {

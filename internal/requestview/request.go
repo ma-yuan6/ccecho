@@ -1,10 +1,13 @@
 package requestview
 
-// 请求文件解析
-
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
+
+	"claude-proxy-go/internal/config"
+	jsonutil "claude-proxy-go/internal/utils/json"
 )
 
 type ParsedRequest struct {
@@ -14,10 +17,19 @@ type ParsedRequest struct {
 	Messages     []map[string]any `json:"messages"`
 	NewMessages  []map[string]any `json:"new_messages"`
 	MessageCount int              `json:"message_count"`
+	InputMode    string           `json:"input_mode"`
 }
 
-// ParseRequestFile 解析请求文件
-func ParseRequestFile(path string, previousPath string) (ParsedRequest, error) {
+type Parser interface {
+	Parse(raw []byte, payload map[string]any, previousPayload map[string]any) ParsedRequest
+}
+
+func ParseRequestFile(path string, previousPath string, provider string) (ParsedRequest, error) {
+	parser, err := ParserForProvider(provider)
+	if err != nil {
+		return ParsedRequest{}, err
+	}
+
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return ParsedRequest{}, err
@@ -28,50 +40,31 @@ func ParseRequestFile(path string, previousPath string) (ParsedRequest, error) {
 		return ParsedRequest{Raw: string(raw)}, nil
 	}
 
-	currentMessages := extractMessages(payload["messages"])
-	previousMessages := []map[string]any(nil)
+	var previousPayload map[string]any
 	if previousPath != "" {
-		// 只用上一条 request 做前缀对比：Claude 每次请求会带完整 messages，
-		// 所以“当前轮新增内容” = current - previous 的公共前缀。
 		if prevRaw, err := os.ReadFile(previousPath); err == nil {
-			var prevPayload map[string]any
-			if json.Unmarshal(prevRaw, &prevPayload) == nil {
-				previousMessages = extractMessages(prevPayload["messages"])
-			}
+			_ = json.Unmarshal(prevRaw, &previousPayload)
 		}
 	}
 
-	return ParsedRequest{
-		Model:        stringValue(payload["model"]),
-		Raw:          string(raw),
-		Payload:      payload,
-		Messages:     currentMessages,
-		NewMessages:  incrementalMessages(currentMessages, previousMessages),
-		MessageCount: len(currentMessages),
-	}, nil
+	return parser.Parse(raw, payload, previousPayload), nil
 }
 
-// 提取 messages 字段
-func extractMessages(value any) []map[string]any {
-	items, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	messages := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		msg, ok := item.(map[string]any)
-		if ok {
-			messages = append(messages, msg)
+func ParserForProvider(provider string) (Parser, error) {
+	switch provider {
+	case config.ProviderClaude, config.ProviderCodex:
+		if provider == config.ProviderClaude {
+			return ClaudeParser{}, nil
 		}
+		return CodexParser{}, nil
+	default:
+		return nil, fmt.Errorf("[error] unsupported request provider: %q", provider)
 	}
-	return messages
 }
 
 func incrementalMessages(current, previous []map[string]any) []map[string]any {
 	prefix := 0
 	for prefix < len(current) && prefix < len(previous) {
-		// 逐条比较消息内容，找到 first diff index。
-		// 这里比较 JSON 序列化结果，是为了做深比较并避免手写字段递归。
 		left, _ := json.Marshal(current[prefix])
 		right, _ := json.Marshal(previous[prefix])
 		if string(left) != string(right) {
@@ -79,11 +72,21 @@ func incrementalMessages(current, previous []map[string]any) []map[string]any {
 		}
 		prefix++
 	}
-	// 返回“当前请求相对上一请求”的新增切片，viewer 只渲染这段。
 	return current[prefix:]
 }
 
+func extractObjectArray(value any) []map[string]any {
+	return jsonutil.ExtractObjectArray(value)
+}
+
 func stringValue(value any) string {
-	text, _ := value.(string)
-	return text
+	return jsonutil.StringValue(value)
+}
+
+func cloneObject(in map[string]any) map[string]any {
+	return jsonutil.CloneObject(in)
+}
+
+func contains(s string, substr string) bool {
+	return strings.Contains(s, substr)
 }

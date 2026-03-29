@@ -21,7 +21,7 @@ func TestFinalMessageFromStreamCompletesOnMessageStop(t *testing.T) {
 		"event: message_stop\n" +
 		"data: {\"type\":\"message_stop\"}\n\n")
 
-	finalJSON, complete, err := FinalMessageFromStream(raw)
+	finalJSON, complete, err := FinalMessageFromStreamForProvider(raw, "claude")
 	if err != nil {
 		t.Fatalf("FinalMessageFromStream returned error: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestFinalMessageFromStreamRequiresMessageStop(t *testing.T) {
 		"event: content_block_delta\n" +
 		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n")
 
-	finalJSON, complete, err := FinalMessageFromStream(raw)
+	finalJSON, complete, err := FinalMessageFromStreamForProvider(raw, "claude")
 	if err != nil {
 		t.Fatalf("FinalMessageFromStream returned error: %v", err)
 	}
@@ -70,21 +70,43 @@ func TestFinalMessageFromStreamRequiresMessageStop(t *testing.T) {
 	}
 }
 
-func TestParseMessageJSON(t *testing.T) {
-	raw := []byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"},{"type":"tool_use","name":"echo","input":{"value":1}}],"usage":{"input_tokens":3,"output_tokens":5}}`)
+func TestFinalMessageFromStreamOpenAIResponses(t *testing.T) {
+	raw := []byte("" +
+		"event: response.created\n" +
+		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\"}}\n\n" +
+		"event: response.output_item.added\n" +
+		"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\n" +
+		"event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"item_id\":\"msg_1\",\"delta\":\"hel\"}\n\n" +
+		"event: response.output_text.done\n" +
+		"data: {\"type\":\"response.output_text.done\",\"output_index\":0,\"content_index\":0,\"item_id\":\"msg_1\",\"text\":\"hello\"}\n\n" +
+		"event: response.output_item.done\n" +
+		"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}}\n\n" +
+		"event: response.completed\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n")
 
-	parsed, err := ParseMessageJSON("response1.json", raw)
+	finalJSON, complete, err := FinalMessageFromStreamForProvider(raw, "codex")
 	if err != nil {
-		t.Fatalf("ParseMessageJSON returned error: %v", err)
+		t.Fatalf("FinalMessageFromStream returned error: %v", err)
 	}
-	if len(parsed.Blocks) != 2 {
-		t.Fatalf("unexpected block count: %d", len(parsed.Blocks))
+	if !complete {
+		t.Fatal("expected complete stream after response.completed")
 	}
-	if parsed.Blocks[0].Content != "ok" {
-		t.Fatalf("unexpected first block content: %#v", parsed.Blocks[0].Content)
+
+	var payload map[string]any
+	if err := json.Unmarshal(finalJSON, &payload); err != nil {
+		t.Fatalf("final json is invalid: %v", err)
 	}
-	if parsed.Tokens.OutputTokens != 5 {
-		t.Fatalf("unexpected output tokens: %d", parsed.Tokens.OutputTokens)
+	if payload["id"] != "resp_1" {
+		t.Fatalf("unexpected id: %#v", payload["id"])
+	}
+	output, _ := payload["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("unexpected output length: %d", len(output))
+	}
+	usage, _ := payload["usage"].(map[string]any)
+	if usage["output_tokens"] != float64(2) {
+		t.Fatalf("unexpected usage: %#v", usage)
 	}
 }
 
@@ -100,7 +122,7 @@ func TestFinalMessageFromStreamWithLargeEventLine(t *testing.T) {
 		"event: message_stop\n" +
 		"data: {\"type\":\"message_stop\"}\n\n")
 
-	finalJSON, complete, err := FinalMessageFromStream(raw)
+	finalJSON, complete, err := FinalMessageFromStreamForProvider(raw, "claude")
 	if err != nil {
 		t.Fatalf("FinalMessageFromStream returned error: %v", err)
 	}

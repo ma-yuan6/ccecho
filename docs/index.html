@@ -1,0 +1,1717 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta name="description" content="ccecho：为 Claude Code / Codex CLI 提供透明记录、调用可视化与本地回放的轻量 CLI。"/>
+    <title>ccecho | 透明记录、调用可视化、本地回放</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com"/>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Serif+SC:wght@500;700&display=swap"
+          rel="stylesheet"/>
+    <style>
+        /* 主题变量 */
+        :root {
+            --bg: #f8f4ec;
+            --ink: #1e1f1e;
+            --muted: #4a4f47;
+            --brand: #d5521f;
+            --brand-deep: #a13b14;
+            --accent: #1f6f78;
+            --paper: #fffdf8;
+            --line: rgba(30, 31, 30, 0.14);
+            --shadow: 0 18px 40px rgba(45, 24, 10, 0.12);
+            --radius: 18px;
+            --max: 1140px;
+            --spot-x: 50%;
+            --spot-y: 24%;
+        }
+
+        :root[data-theme="dark"] {
+            --bg: #111513;
+            --ink: #e8ece8;
+            --muted: #c2ccc2;
+            --brand: #e06c3b;
+            --brand-deep: #ff9164;
+            --accent: #58aeb7;
+            --paper: #1a221f;
+            --line: rgba(232, 236, 232, 0.16);
+            --shadow: 0 20px 45px rgba(0, 0, 0, 0.42);
+        }
+
+        /* 基础样式 */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body {
+            width: 100%;
+            scroll-behavior: smooth;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: "Manrope", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        }
+
+        body::after {
+            content: "";
+            position: fixed;
+            z-index: -2;
+            filter: blur(36px);
+            opacity: 0.55;
+            animation: blobFloat 14s ease-in-out infinite alternate;
+            will-change: transform;
+        }
+
+        body::after {
+            width: 36vw;
+            height: 36vw;
+            min-width: 280px;
+            min-height: 280px;
+            background: radial-gradient(circle at 70% 70%, rgba(31, 111, 120, 0.56), transparent 70%);
+            right: -10vw;
+            bottom: -10vw;
+            animation-duration: 16s;
+            animation-delay: -6s;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        code {
+            font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+            font-size: 0.92em;
+            background: rgba(30, 31, 30, 0.08);
+            border: 1px solid rgba(30, 31, 30, 0.12);
+            border-radius: 6px;
+            padding: 0.08rem 0.34rem;
+            color: #1f3e42;
+            white-space: nowrap;
+        }
+
+        :root[data-theme="dark"] code {
+            background: rgba(232, 236, 232, 0.08);
+            border-color: rgba(232, 236, 232, 0.18);
+            color: #8dd6de;
+        }
+
+        /* 背景层 */
+        .site {
+            position: relative;
+            overflow-x: clip;
+            isolation: isolate;
+        }
+
+        .site::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+            background: radial-gradient(680px circle at var(--spot-x) var(--spot-y), color-mix(in srgb, var(--accent) 18%, transparent), transparent 60%);
+        }
+
+        .scroll-progress {
+            position: fixed;
+            top: 0;
+            left: 0;
+            z-index: 40;
+            height: 3px;
+            width: 100%;
+            transform-origin: left;
+            transform: scaleX(0);
+            background: linear-gradient(90deg, var(--brand), var(--accent));
+            box-shadow: 0 0 12px color-mix(in srgb, var(--brand) 65%, transparent);
+            pointer-events: none;
+        }
+
+        .noise {
+            pointer-events: none;
+            position: fixed;
+            inset: 0;
+            z-index: 2;
+            opacity: 0.2;
+            background-image: radial-gradient(rgba(0, 0, 0, 0.06) 0.8px, transparent 0.8px);
+            background-size: 5px 5px;
+            animation: noiseShift 10s steps(8, end) infinite;
+        }
+
+        .aurora {
+            pointer-events: none;
+            position: fixed;
+            inset: -10% -20%;
+            z-index: 1;
+            opacity: 0.52;
+            background: radial-gradient(40% 40% at 20% 30%, rgba(213, 82, 31, 0.2), transparent 70%),
+            radial-gradient(34% 34% at 76% 26%, rgba(31, 111, 120, 0.24), transparent 72%),
+            radial-gradient(50% 40% at 58% 80%, rgba(241, 181, 82, 0.18), transparent 75%);
+            filter: blur(18px) saturate(110%);
+            transform: translate3d(0, 0, 0);
+            animation: auroraDrift 16s ease-in-out infinite alternate;
+            will-change: transform;
+        }
+
+        .nav-wrap,
+        main,
+        footer {
+            position: relative;
+            z-index: 3;
+        }
+
+        .container {
+            width: min(100% - 2.6rem, var(--max));
+            margin-inline: auto;
+        }
+
+        /* 顶部导航 */
+        .nav-wrap {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            backdrop-filter: blur(12px);
+            background: color-mix(in srgb, var(--bg) 78%, transparent);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            min-height: 72px;
+            gap: 1rem;
+        }
+
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .brand {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 0.45rem;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+        }
+
+        .brand-mark {
+            width: 11px;
+            height: 11px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--brand) 20%, var(--accent));
+            box-shadow: 0 0 0 6px rgba(213, 82, 31, 0.1);
+            animation: pulseMark 1.5s ease-out infinite;
+        }
+
+        .theme-toggle {
+            border: 1px solid var(--line);
+            background: color-mix(in srgb, var(--paper) 86%, transparent);
+            color: var(--ink);
+            border-radius: 999px;
+            padding: 0.42rem 0.75rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            font-size: 0.83rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.22s ease, background 0.22s ease, border-color 0.22s ease;
+        }
+
+        .theme-toggle:hover {
+            transform: translateY(-1px);
+            border-color: color-mix(in srgb, var(--brand) 42%, var(--line));
+        }
+
+        .nav-icon-btn {
+            width: 42px;
+            height: 42px;
+            border-radius: 999px;
+            border: 1px solid var(--line);
+            background: color-mix(in srgb, var(--paper) 86%, transparent);
+            color: var(--ink);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.22s ease, background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+        }
+
+        .nav-icon-btn:hover {
+            transform: translateY(-1px);
+            border-color: color-mix(in srgb, var(--brand) 42%, var(--line));
+            box-shadow: 0 10px 18px rgba(20, 24, 22, 0.1);
+        }
+
+        .nav-icon-btn svg {
+            width: 1.05rem;
+            height: 1.05rem;
+            fill: currentColor;
+        }
+
+        .theme-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--brand), var(--accent));
+            box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 18%, transparent);
+        }
+
+        /* Hero 区域 */
+        .hero {
+            padding: 3.6rem 0 2.4rem;
+            position: relative;
+        }
+
+        .hero-grid {
+            display: grid;
+            grid-template-columns: 1.05fr 0.95fr;
+            gap: 1.6rem;
+            align-items: end;
+            position: relative;
+        }
+
+        /* Keep the left column above the demo card so its dropdown can receive pointer events. */
+        .hero-grid > article.reveal {
+            position: relative;
+            z-index: 5;
+        }
+
+        .hero-card.reveal {
+            position: relative;
+            z-index: 1;
+        }
+
+        .eyebrow {
+            display: inline-block;
+            margin-bottom: 1.1rem;
+            padding: 0.35rem 0.85rem;
+            border-radius: 999px;
+            border: 1px solid rgba(30, 31, 30, 0.2);
+            font-size: 0.82rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: #31342f;
+        }
+
+        :root[data-theme="dark"] .eyebrow {
+            color: #eef4ef;
+            border-color: rgba(121, 212, 221, 0.26);
+            background: linear-gradient(135deg, rgba(24, 31, 29, 0.9), rgba(18, 47, 52, 0.78));
+            box-shadow:
+                0 10px 24px rgba(0, 0, 0, 0.22),
+                inset 0 0 0 1px rgba(255, 154, 109, 0.08);
+        }
+
+        .hero h1 {
+            font-family: "Noto Serif SC", serif;
+            font-weight: 700;
+            line-height: 1.16;
+            font-size: clamp(2rem, 4.2vw, 4rem);
+            margin-bottom: 1rem;
+            text-wrap: nowrap;
+            white-space: nowrap;
+            color: var(--ink);
+            position: relative;
+            display: inline-block;
+            padding-bottom: 0.12em;
+            overflow: visible;
+        }
+
+        .hero p {
+            color: var(--muted);
+            font-size: clamp(1rem, 1.2vw, 1.13rem);
+            max-width: 52ch;
+            line-height: 1.72;
+        }
+
+        @supports ((-webkit-background-clip: text) or (background-clip: text)) {
+            .hero h1 {
+                background: linear-gradient(92deg, var(--ink) 0%, var(--ink) 38%, var(--brand) 52%, var(--accent) 68%, var(--ink) 82%);
+                background-size: 240% 100%;
+                -webkit-background-clip: text;
+                background-clip: text;
+                color: transparent;
+                -webkit-text-fill-color: transparent;
+                animation: titleShimmer 4.8s ease-in-out infinite;
+            }
+        }
+
+        :root[data-theme="dark"] .hero h1 {
+            color: #f2f5f2;
+            background: none;
+            -webkit-text-fill-color: #f2f5f2;
+            text-shadow: 0 0 0 rgba(121, 212, 221, 0);
+            animation: darkTitlePulse 3.6s ease-in-out infinite;
+        }
+
+        :root[data-theme="dark"] .hero h1::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: -0.28em;
+            height: 3px;
+            border-radius: 999px;
+            background: linear-gradient(90deg, transparent 0%, #79d4dd 28%, #ff9a6d 52%, #79d4dd 74%, transparent 100%);
+            background-size: 220% 100%;
+            opacity: 0.9;
+            animation: darkUnderlineFlow 2s linear infinite;
+        }
+
+        .hero-actions {
+            margin-top: 1.4rem;
+            display: flex;
+            gap: 0.9rem;
+            flex-wrap: wrap;
+            overflow: visible;
+        }
+
+        .hero-badges {
+            margin-top: 0.8rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            border-radius: 999px;
+            border: 1px solid var(--line);
+            background: color-mix(in srgb, var(--paper) 90%, transparent);
+            padding: 0.35rem 0.68rem;
+            font-size: 0.79rem;
+            color: color-mix(in srgb, var(--muted) 82%, var(--ink));
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.04);
+            animation: badgeLift 3.2s ease-in-out infinite;
+        }
+
+        .badge:nth-child(2) {
+            animation-delay: -1.8s;
+        }
+
+        .badge:nth-child(3) {
+            animation-delay: -3.4s;
+        }
+
+        .badge::before {
+            content: "";
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--brand), var(--accent));
+            flex-shrink: 0;
+        }
+
+        /* 按钮与下载菜单 */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.45rem;
+            padding: 0.86rem 1.16rem;
+            min-height: 50px;
+            border-radius: 14px;
+            border: 1px solid transparent;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            position: relative;
+            isolation: isolate;
+            overflow: hidden;
+            transition: transform 0.24s ease, box-shadow 0.24s ease, background 0.24s ease, border-color 0.24s ease;
+            cursor: pointer;
+        }
+
+        .btn::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            z-index: -1;
+            opacity: 0;
+            transform: translateX(-26%);
+            transition: transform 0.36s ease, opacity 0.36s ease;
+            background: linear-gradient(105deg, transparent 20%, rgba(255, 255, 255, 0.38) 48%, transparent 78%);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--brand), #f07a3f);
+            color: #fff;
+            box-shadow: 0 10px 20px rgba(191, 74, 24, 0.32);
+            padding-inline: 1.28rem;
+        }
+
+        .btn-ghost {
+            border-color: rgba(30, 31, 30, 0.2);
+            color: var(--ink);
+            background: rgba(255, 253, 248, 0.84);
+            backdrop-filter: blur(2px);
+        }
+
+        .btn-github {
+            gap: 0.62rem;
+            padding-inline: 1.1rem;
+        }
+
+        .btn-icon-circle {
+            width: 1.45rem;
+            height: 1.45rem;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            border: 1px solid currentColor;
+            background: rgba(255, 255, 255, 0.16);
+        }
+
+        .btn-icon-circle svg {
+            width: 0.82rem;
+            height: 0.82rem;
+            fill: currentColor;
+        }
+
+        .download-pop {
+            position: relative;
+            display: inline-flex;
+            flex-direction: column;
+            align-items: flex-start;
+            overflow: visible;
+            padding-bottom: 0.35rem;
+            margin-bottom: -0.35rem;
+            z-index: 60;
+        }
+
+        .download-pop:is(:hover, :focus-within) {
+            z-index: 90;
+        }
+
+        .download-trigger {
+            padding-inline: 1.2rem;
+            min-width: 122px;
+        }
+
+        .download-trigger::after {
+            content: "▾";
+            font-size: 0.8em;
+            opacity: 0.82;
+            transition: transform 0.24s ease;
+        }
+
+        .download-pop:is(:hover, :focus-within) .download-trigger::after {
+            transform: rotate(180deg);
+        }
+
+        .download-menu {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            min-width: 210px;
+            display: grid;
+            gap: 0.28rem;
+            padding: 0.44rem;
+            border-radius: 12px;
+            border: 1px solid color-mix(in srgb, var(--brand) 20%, var(--line));
+            background: color-mix(in srgb, var(--paper) 96%, #fff);
+            box-shadow: 0 18px 34px rgba(26, 28, 26, 0.16);
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transition: opacity 0.22s ease;
+            z-index: 120;
+        }
+
+        .download-pop:is(:hover, :focus-within) .download-menu {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+        }
+
+        .download-pop.upward {
+            padding-top: 0.35rem;
+            padding-bottom: 0;
+            margin-top: -0.35rem;
+            margin-bottom: 0;
+        }
+
+        .download-pop.upward .download-menu {
+            top: auto;
+            bottom: 100%;
+        }
+
+        .download-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.8rem;
+            border-radius: 9px;
+            padding: 0.56rem 0.7rem;
+            font-size: 0.9rem;
+            color: color-mix(in srgb, var(--muted) 72%, var(--ink));
+            border: 1px solid transparent;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .download-item span:last-child {
+            opacity: 0.62;
+            font-size: 0.84em;
+        }
+
+        .download-item:is(:hover, :focus-visible) {
+            background: color-mix(in srgb, var(--brand) 11%, var(--paper));
+            color: var(--ink);
+            border-color: color-mix(in srgb, var(--brand) 44%, var(--line));
+            box-shadow: 0 6px 14px rgba(20, 24, 22, 0.1);
+            outline: none;
+        }
+
+        :root[data-theme="dark"] .btn-ghost {
+            border-color: rgba(232, 236, 232, 0.18);
+            background: rgba(21, 27, 24, 0.72);
+        }
+
+        :root[data-theme="dark"] .btn-github .btn-icon-circle {
+            background: rgba(232, 236, 232, 0.08);
+        }
+
+        :root[data-theme="dark"] .nav-icon-btn {
+            border-color: rgba(232, 236, 232, 0.18);
+            background: rgba(21, 27, 24, 0.72);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px) scale(1.01);
+            box-shadow: 0 12px 24px rgba(20, 24, 22, 0.12);
+        }
+
+        .btn:hover::before {
+            opacity: 1;
+            transform: translateX(14%);
+        }
+
+        .btn:hover::after {
+            transform: translateX(2px);
+            opacity: 1;
+        }
+
+        .btn.download-trigger:hover {
+            transform: none;
+        }
+
+        /* 右侧演示卡片 */
+        .hero-card {
+            background: linear-gradient(145deg, color-mix(in srgb, var(--paper) 92%, #fff), color-mix(in srgb, var(--paper) 88%, #f1e7d5));
+            border-radius: calc(var(--radius) + 4px);
+            border: 1px solid rgba(30, 31, 30, 0.12);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            position: relative;
+            isolation: isolate;
+        }
+
+        :root[data-theme="dark"] .hero-card {
+            border-color: rgba(121, 212, 221, 0.28);
+            animation: darkCardGlow 3.2s ease-in-out infinite;
+        }
+
+        .hero-card::before {
+            content: "";
+            position: absolute;
+            inset: auto auto -30% -10%;
+            width: 66%;
+            aspect-ratio: 1;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(31, 111, 120, 0.28), transparent 70%);
+            z-index: -1;
+        }
+
+        .hero-card::after {
+            content: "";
+            position: absolute;
+            inset: -140% 20% auto -40%;
+            height: 80%;
+            transform: rotate(18deg);
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.36), transparent);
+            animation: sheen 5.5s ease-in-out infinite;
+            pointer-events: none;
+        }
+
+    .terminal {
+      background: color-mix(in srgb, #131916 72%, #212724);
+      color: #e7e4dc;
+      padding: 1rem;
+      font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      font-size: 0.86rem;
+      line-height: 1.6;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .terminal .dot {
+            display: inline-block;
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            margin-right: 0.3rem;
+        }
+
+        .dot.red {
+            background: #ff6a5f;
+        }
+
+        .dot.yellow {
+            background: #f7be4d;
+        }
+
+        .dot.green {
+            background: #28ca41;
+        }
+
+        .card-content {
+            padding: 1.2rem 1.3rem 1.4rem;
+        }
+
+        .kpi {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.65rem;
+            margin-top: 1rem;
+        }
+
+        .kpi > div {
+            background: color-mix(in srgb, var(--paper) 76%, #fff);
+            border: 1px solid rgba(30, 31, 30, 0.12);
+            border-radius: 12px;
+            padding: 0.65rem;
+            text-align: center;
+        }
+
+        .kpi strong {
+            display: block;
+            font-size: 1.1rem;
+            color: var(--brand-deep);
+        }
+
+        /* 内容区块 */
+        section {
+            padding: 1.9rem 0;
+        }
+
+        .section-title {
+            display: flex;
+            align-items: end;
+            justify-content: space-between;
+            gap: 1rem;
+            margin-bottom: 0.85rem;
+        }
+
+        .section-title h2 {
+            font-family: "Noto Serif SC", serif;
+            font-size: clamp(1.45rem, 2.2vw, 2.3rem);
+            line-height: 1.24;
+        }
+
+        .section-title p {
+            color: var(--muted);
+            max-width: 48ch;
+            line-height: 1.64;
+        }
+
+        .section-title.centered {
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            gap: 0.4rem;
+            margin-bottom: 1rem;
+        }
+
+        .section-title.centered p {
+            max-width: 60ch;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.8rem;
+        }
+
+        .feature {
+            border-radius: var(--radius);
+            background: var(--paper);
+            border: 1px solid var(--line);
+            padding: 1.2rem;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.04);
+            transition: transform 120ms ease-out;
+            position: relative;
+            overflow: hidden;
+            will-change: transform;
+        }
+
+        .feature:hover {
+            --lift: -4px;
+        }
+
+        .feature h3 {
+            margin-bottom: 0.45rem;
+            font-size: 1.08rem;
+            text-align: center;
+            text-wrap: balance;
+            max-width: 16ch;
+            margin-inline: auto;
+        }
+
+        .feature p {
+            color: var(--muted);
+            line-height: 1.62;
+            font-size: 0.95rem;
+        }
+
+        :root[data-theme="dark"] .section-title p,
+        :root[data-theme="dark"] .feature p,
+        :root[data-theme="dark"] .panel li,
+        :root[data-theme="dark"] .hero p,
+        :root[data-theme="dark"] .card-content p,
+        :root[data-theme="dark"] .cta p {
+            color: #cdd6cd !important;
+        }
+
+        .split {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.8rem;
+        }
+
+        .panel {
+            border-radius: var(--radius);
+            border: 1px solid var(--line);
+            background: var(--paper);
+            padding: 1.2rem;
+            position: relative;
+            overflow: hidden;
+            transition: transform 120ms ease-out;
+        }
+
+        .panel:hover,
+        blockquote:hover {
+            --lift: -3px;
+        }
+
+        .panel::after {
+            content: "";
+            position: absolute;
+            inset: auto -10% -44% auto;
+            width: 60%;
+            aspect-ratio: 1;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(213, 82, 31, 0.15), transparent 70%);
+            pointer-events: none;
+        }
+
+        .panel ul {
+            list-style: none;
+            margin-top: 0.9rem;
+            display: grid;
+            gap: 0.6rem;
+        }
+
+        .panel li {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.55rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .panel li::before {
+            content: "•";
+            color: var(--brand);
+            font-weight: 800;
+        }
+
+        .panel:hover {
+            transform: translateY(-2px);
+        }
+
+        .viewer-showcase {
+            display: grid;
+            grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .viewer-copy {
+            border-radius: calc(var(--radius) + 2px);
+            border: 1px solid var(--line);
+            background:
+                linear-gradient(145deg, color-mix(in srgb, var(--paper) 95%, #fff), color-mix(in srgb, var(--paper) 88%, #f1e7d5));
+            padding: 1.4rem;
+            box-shadow: 0 16px 34px rgba(18, 22, 20, 0.08);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .viewer-copy::after {
+            content: "";
+            position: absolute;
+            inset: auto -14% -28% auto;
+            width: 180px;
+            aspect-ratio: 1;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(31, 111, 120, 0.18), transparent 72%);
+            pointer-events: none;
+        }
+
+        .viewer-kicker {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            font-size: 0.76rem;
+            font-weight: 800;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: color-mix(in srgb, var(--brand-deep) 78%, var(--ink));
+        }
+
+        .viewer-kicker::before {
+            content: "";
+            width: 0.52rem;
+            height: 0.52rem;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--brand), var(--accent));
+            box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 18%, transparent);
+        }
+
+        .viewer-copy h3 {
+            margin-top: 0.9rem;
+            font-family: "Noto Serif SC", serif;
+            font-size: clamp(1.45rem, 2vw, 2.15rem);
+            line-height: 1.28;
+        }
+
+        .viewer-copy p {
+            margin-top: 0.8rem;
+            color: var(--muted);
+            line-height: 1.68;
+        }
+
+        .viewer-points {
+            list-style: none;
+            margin-top: 1rem;
+            display: grid;
+            gap: 0.6rem;
+        }
+
+        .viewer-points li {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.6rem;
+            color: color-mix(in srgb, var(--muted) 90%, var(--ink));
+            line-height: 1.55;
+        }
+
+        .viewer-points li::before {
+            content: "";
+            width: 0.5rem;
+            height: 0.5rem;
+            margin-top: 0.42rem;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: linear-gradient(135deg, var(--brand), var(--accent));
+        }
+
+        .viewer-frame {
+            position: relative;
+            padding: 0.55rem;
+            border-radius: 24px;
+            border: 1px solid color-mix(in srgb, var(--brand) 20%, var(--line));
+            background:
+                linear-gradient(155deg, color-mix(in srgb, var(--paper) 94%, #fff), color-mix(in srgb, var(--paper) 82%, #e8edea)),
+                linear-gradient(135deg, rgba(213, 82, 31, 0.08), rgba(31, 111, 120, 0.08));
+            box-shadow: 0 20px 40px rgba(18, 22, 20, 0.12);
+            overflow: hidden;
+            isolation: isolate;
+            transform-origin: center;
+            animation: viewerFrameDrift 6.8s ease-in-out infinite;
+            transition: transform 0.35s ease, box-shadow 0.35s ease, border-color 0.35s ease;
+        }
+
+        .viewer-frame::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(110deg, transparent 18%, rgba(255, 255, 255, 0.18) 34%, transparent 52%),
+                radial-gradient(circle at 18% 18%, rgba(255, 255, 255, 0.12), transparent 30%);
+            pointer-events: none;
+        }
+
+        .viewer-frame::after {
+            content: "";
+            position: absolute;
+            inset: 6% -18% auto;
+            height: 34%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.26), transparent);
+            transform: translate3d(-18%, 0, 0) rotate(-6deg);
+            opacity: 0;
+            pointer-events: none;
+            animation: viewerScan 5.4s ease-in-out infinite;
+        }
+
+        .viewer-frame:hover {
+            transform: translateY(-4px) rotate(-0.4deg);
+            box-shadow: 0 28px 54px rgba(18, 22, 20, 0.16);
+            border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
+        }
+
+        .viewer-shot {
+            display: block;
+            width: 100%;
+            height: auto;
+            border-radius: 16px;
+            border: 1px solid rgba(30, 31, 30, 0.08);
+            box-shadow: 0 10px 24px rgba(20, 24, 22, 0.12);
+            transform-origin: center;
+            animation: viewerShotFloat 7.2s ease-in-out infinite;
+        }
+
+        .viewer-badge {
+            position: absolute;
+            z-index: 2;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            background: rgba(20, 26, 24, 0.78);
+            color: #eef4ef;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 14px 28px rgba(8, 10, 10, 0.22);
+            letter-spacing: 0.01em;
+            white-space: nowrap;
+            animation: viewerBadgeFloat 4.6s ease-in-out infinite;
+        }
+
+        .viewer-badge strong {
+            font-size: 0.88rem;
+            font-weight: 800;
+        }
+
+        .viewer-badge span {
+            font-size: 0.73rem;
+            opacity: 0.78;
+        }
+
+        .viewer-badge.top {
+            top: 1.1rem;
+            right: 1.2rem;
+            padding: 0.5rem 0.8rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+        }
+
+        .viewer-badge.top::before {
+            content: "";
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #44d17d, #8ee3af);
+            box-shadow: 0 0 0 6px rgba(68, 209, 125, 0.14);
+            flex-shrink: 0;
+        }
+
+        .viewer-badge.side {
+            left: 1.2rem;
+            bottom: 1.35rem;
+            padding: 0.7rem 0.9rem;
+            display: grid;
+            gap: 0.1rem;
+            animation-delay: -2.2s;
+        }
+
+        .viewer-badge.side strong {
+            color: #f4c78f;
+        }
+
+        :root[data-theme="dark"] .viewer-copy {
+            border-color: rgba(232, 236, 232, 0.14);
+            background:
+                linear-gradient(145deg, rgba(24, 30, 27, 0.96), rgba(19, 24, 22, 0.92));
+            box-shadow: 0 18px 36px rgba(0, 0, 0, 0.26);
+        }
+
+        :root[data-theme="dark"] .viewer-copy p,
+        :root[data-theme="dark"] .viewer-points li {
+            color: #cdd6cd;
+        }
+
+        :root[data-theme="dark"] .viewer-frame {
+            border-color: rgba(121, 212, 221, 0.22);
+            background:
+                linear-gradient(155deg, rgba(20, 26, 24, 0.96), rgba(17, 34, 38, 0.92)),
+                linear-gradient(135deg, rgba(213, 82, 31, 0.1), rgba(31, 111, 120, 0.1));
+            box-shadow: 0 22px 46px rgba(0, 0, 0, 0.26);
+        }
+
+        :root[data-theme="dark"] .viewer-shot {
+            border-color: rgba(232, 236, 232, 0.08);
+            box-shadow: 0 12px 26px rgba(0, 0, 0, 0.24);
+        }
+
+        :root[data-theme="dark"] .viewer-frame:hover {
+            box-shadow: 0 30px 58px rgba(0, 0, 0, 0.34);
+            border-color: rgba(121, 212, 221, 0.3);
+        }
+
+        .cta {
+            padding: 2rem;
+            border-radius: 24px;
+            background: linear-gradient(130deg, #282f2a 8%, #1d545c 56%, #d5521f 120%);
+            color: #f4f8f7;
+            box-shadow: 0 20px 45px rgba(15, 18, 16, 0.3);
+            display: grid;
+            grid-template-columns: 1fr auto;
+            align-items: center;
+            gap: 0.8rem;
+            position: relative;
+            z-index: 5;
+        }
+
+        .cta.reveal {
+            z-index: 6;
+        }
+
+        .cta h3 {
+            font-size: clamp(1.35rem, 2.3vw, 2rem);
+            margin-bottom: 0.5rem;
+            font-family: "Noto Serif SC", serif;
+        }
+
+        .cta p {
+            color: rgba(244, 248, 247, 0.84);
+            line-height: 1.6;
+            max-width: 48ch;
+        }
+
+        .cta .btn {
+            background: #f5f1e8;
+            color: #1c2420;
+            min-width: 160px;
+            border-color: rgba(245, 241, 232, 0.2);
+        }
+
+        .cta-actions {
+            display: flex;
+            gap: 0.6rem;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            overflow: visible;
+            position: relative;
+            z-index: 7;
+        }
+
+        .btn-cta-download {
+            background: linear-gradient(135deg, #f3f7ff, #d9e7ff);
+            color: #17305e;
+            border-color: rgba(23, 48, 94, 0.16);
+            box-shadow: 0 8px 18px rgba(17, 38, 73, 0.18);
+        }
+
+        .btn-cta-download::after {
+            content: "▾";
+            font-size: 0.88em;
+            opacity: 0.82;
+        }
+
+        /* 深色模式覆盖 */
+        :root[data-theme="dark"] .download-menu {
+            background: rgba(24, 30, 27, 0.98);
+            border-color: rgba(232, 236, 232, 0.18);
+            box-shadow: 0 16px 34px rgba(0, 0, 0, 0.44);
+        }
+
+        :root[data-theme="dark"] .download-item {
+            color: #d2d9d2;
+        }
+
+        :root[data-theme="dark"] .download-item:is(:hover, :focus-visible) {
+            background: rgba(232, 236, 232, 0.08);
+            color: #edf2ed;
+            border-color: rgba(232, 236, 232, 0.28);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.28);
+        }
+
+        footer {
+            padding: 1.8rem 0 2.8rem;
+            color: color-mix(in srgb, var(--muted) 78%, #8f958f);
+            font-size: 0.9rem;
+        }
+
+        :root[data-theme="dark"] footer {
+            color: #bcc6bc;
+        }
+
+        .reveal {
+            opacity: 0;
+            transform: translateY(18px);
+            transition: opacity 0.5s ease, transform 0.5s ease;
+        }
+
+        .reveal.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* 动画 */
+        @keyframes blobFloat {
+            0% {
+                transform: translate3d(0, 0, 0) scale(1);
+            }
+            100% {
+                transform: translate3d(2.8vw, 2.2vh, 0) scale(1.08);
+            }
+        }
+
+        @keyframes auroraDrift {
+            0% {
+                transform: translate3d(-1.2vw, -0.8vh, 0) rotate(0.001deg);
+            }
+            100% {
+                transform: translate3d(1.8vw, 1.3vh, 0) rotate(0.001deg);
+            }
+        }
+
+        @keyframes noiseShift {
+            0% {
+                transform: translate3d(0, 0, 0);
+            }
+            100% {
+                transform: translate3d(10px, -8px, 0);
+            }
+        }
+
+        @keyframes sheen {
+            0% {
+                transform: translate3d(-20%, 0, 0) rotate(18deg);
+                opacity: 0;
+            }
+            18% {
+                opacity: 0.55;
+            }
+            32% {
+                transform: translate3d(70%, 0, 0) rotate(18deg);
+                opacity: 0;
+            }
+            100% {
+                transform: translate3d(70%, 0, 0) rotate(18deg);
+                opacity: 0;
+            }
+        }
+
+        @keyframes titleShimmer {
+            0% {
+                background-position: 0% 50%;
+            }
+            45% {
+                background-position: 100% 50%;
+            }
+            100% {
+                background-position: 0% 50%;
+            }
+        }
+
+        @keyframes darkTitlePulse {
+            0% {
+                text-shadow: 0 0 0 rgba(121, 212, 221, 0);
+                opacity: 1;
+            }
+            50% {
+                text-shadow: 0 0 14px rgba(121, 212, 221, 0.26);
+                opacity: 0.985;
+            }
+            100% {
+                text-shadow: 0 0 0 rgba(121, 212, 221, 0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes darkUnderlineFlow {
+            0% {
+                background-position: 0% 50%;
+            }
+            100% {
+                background-position: 220% 50%;
+            }
+        }
+
+        @keyframes darkCardGlow {
+            0% {
+                box-shadow: 0 22px 42px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(121, 212, 221, 0.05) inset;
+            }
+            50% {
+                box-shadow: 0 26px 54px rgba(0, 0, 0, 0.56), 0 0 22px rgba(121, 212, 221, 0.18), 0 0 0 1px rgba(255, 154, 109, 0.16) inset;
+            }
+            100% {
+                box-shadow: 0 22px 42px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(121, 212, 221, 0.05) inset;
+            }
+        }
+
+        @keyframes pulseMark {
+            0% {
+                box-shadow: 0 0 0 0 rgba(213, 82, 31, 0.34);
+            }
+            75% {
+                box-shadow: 0 0 0 10px rgba(213, 82, 31, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(213, 82, 31, 0);
+            }
+        }
+
+        @keyframes badgeLift {
+            0%, 100% {
+                transform: translateY(0);
+            }
+            50% {
+                transform: translateY(-3px);
+            }
+        }
+
+        @keyframes viewerFrameDrift {
+            0%, 100% {
+                transform: translate3d(0, 0, 0) rotate(0deg);
+            }
+            50% {
+                transform: translate3d(0, -6px, 0) rotate(-0.45deg);
+            }
+        }
+
+        @keyframes viewerShotFloat {
+            0%, 100% {
+                transform: scale(1) translate3d(0, 0, 0);
+            }
+            50% {
+                transform: scale(1.012) translate3d(0, -4px, 0);
+            }
+        }
+
+        @keyframes viewerBadgeFloat {
+            0%, 100% {
+                transform: translate3d(0, 0, 0);
+            }
+            50% {
+                transform: translate3d(0, -6px, 0);
+            }
+        }
+
+        @keyframes viewerScan {
+            0% {
+                transform: translate3d(-28%, 0, 0) rotate(-6deg);
+                opacity: 0;
+            }
+            14% {
+                opacity: 0.22;
+            }
+            34% {
+                transform: translate3d(38%, 0, 0) rotate(-6deg);
+                opacity: 0;
+            }
+            100% {
+                transform: translate3d(38%, 0, 0) rotate(-6deg);
+                opacity: 0;
+            }
+        }
+
+        /* 响应式 */
+        @media (max-width: 980px) {
+            .hero-grid,
+            .feature-grid,
+            .split,
+            .viewer-showcase,
+            .cta {
+                grid-template-columns: 1fr;
+            }
+
+            .hero {
+                padding-top: 2.8rem;
+            }
+
+            .section-title {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+        }
+
+        @media (max-width: 620px) {
+            .container {
+                width: min(100% - 1.4rem, var(--max));
+            }
+
+            .nav-right {
+                gap: 0.55rem;
+            }
+
+            .theme-toggle {
+                padding: 0.38rem 0.62rem;
+            }
+
+            .kpi {
+                grid-template-columns: 1fr;
+            }
+
+            .cta {
+                padding: 1.35rem;
+            }
+
+            .hero-badges {
+                gap: 0.45rem;
+            }
+
+            .badge {
+                font-size: 0.75rem;
+                padding: 0.32rem 0.6rem;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *,
+            *::before,
+            *::after {
+                animation: none !important;
+                transition: none !important;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="site">
+    <div class="scroll-progress" aria-hidden="true"></div>
+    <div class="aurora"></div>
+    <div class="noise"></div>
+
+    <div class="nav-wrap">
+        <nav class="nav container">
+            <a class="brand" aria-label="ccecho 首页">
+                <span class="brand-mark"></span>
+                <span>ccecho</span>
+            </a>
+            <div class="nav-right">
+                <a class="nav-icon-btn" href="https://github.com/your-org/ccecho" target="_blank" rel="noreferrer"
+                   aria-label="GitHub">
+                    <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                        <path d="M12 2C6.48 2 2 6.58 2 12.22c0 4.5 2.87 8.32 6.84 9.66.5.1.68-.22.68-.49 0-.24-.01-1.03-.01-1.87-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.05 1.53 1.05.9 1.57 2.35 1.12 2.92.86.09-.67.35-1.12.63-1.38-2.22-.26-4.55-1.14-4.55-5.09 0-1.13.39-2.05 1.03-2.77-.1-.26-.45-1.3.1-2.72 0 0 .84-.28 2.75 1.06A9.3 9.3 0 0 1 12 6.84c.85 0 1.7.12 2.49.35 1.9-1.34 2.74-1.06 2.74-1.06.55 1.42.2 2.46.1 2.72.64.72 1.03 1.64 1.03 2.77 0 3.96-2.33 4.82-4.56 5.08.36.32.68.95.68 1.92 0 1.39-.01 2.5-.01 2.84 0 .27.18.59.69.49A10.26 10.26 0 0 0 22 12.22C22 6.58 17.52 2 12 2Z"></path>
+                    </svg>
+                </a>
+                <button class="theme-toggle" id="themeToggle" type="button" aria-label="切换暗黑模式">
+                    <span class="theme-dot"></span>
+                    <span id="themeText">暗黑</span>
+                </button>
+            </div>
+        </nav>
+    </div>
+
+    <main id="top">
+        <section class="hero container">
+            <div class="hero-grid">
+                <article class="reveal">
+                    <span class="eyebrow">Lightweight CLI + Visual Replay</span>
+                    <h1>看见agent的每次调用</h1>
+                    <p>
+                        <code>ccecho</code> 为 Claude Code / Codex CLI 提供透明记录、调用可视化和本地回放能力。
+                        你继续用熟悉的命令行工作流，调用链路会被自动沉淀，方便排障、复盘与对比分析。
+                    </p>
+                    <div class="hero-badges" aria-label="产品亮点">
+                        <span class="badge">轻量接入</span>
+                        <span class="badge">调用可视化</span>
+                        <span class="badge">本地可回放</span>
+                    </div>
+                    <div class="hero-actions">
+                        <div class="download-pop" data-download-pop>
+                            <button class="btn btn-primary download-trigger" type="button" aria-haspopup="true"
+                                    aria-expanded="false">
+                                下载
+                            </button>
+                            <div class="download-menu" role="menu">
+                                <a class="download-item" role="menuitem" href="../downloads/macos-intel/ccecho"><span>macOS</span><span>Intel</span></a>
+                                <a class="download-item" role="menuitem" href="../downloads/macos-apple/ccecho"><span>macOS</span><span>Apple</span></a>
+                                <a class="download-item" role="menuitem" href="../downloads/linux-x64/ccecho"><span>Linux</span><span>x64</span></a>
+                                <a class="download-item" role="menuitem" href="../downloads/linux-arm64/ccecho"><span>Linux</span><span>ARM64</span></a>
+                                <a class="download-item" role="menuitem"
+                                   href="../downloads/windows-x64/ccecho.exe"><span>Windows</span><span>x64</span></a>
+                                <a class="download-item" role="menuitem"
+                                   href="../downloads/windows-arm64/ccecho.exe"><span>Windows</span><span>ARM64</span></a>
+                            </div>
+                        </div>
+                        <a class="btn btn-ghost btn-github" href="https://github.com/your-org/ccecho" target="_blank"
+                           rel="noreferrer">
+                <span class="btn-icon-circle" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                    <path d="M12 2C6.48 2 2 6.58 2 12.22c0 4.5 2.87 8.32 6.84 9.66.5.1.68-.22.68-.49 0-.24-.01-1.03-.01-1.87-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.05 1.53 1.05.9 1.57 2.35 1.12 2.92.86.09-.67.35-1.12.63-1.38-2.22-.26-4.55-1.14-4.55-5.09 0-1.13.39-2.05 1.03-2.77-.1-.26-.45-1.3.1-2.72 0 0 .84-.28 2.75 1.06A9.3 9.3 0 0 1 12 6.84c.85 0 1.7.12 2.49.35 1.9-1.34 2.74-1.06 2.74-1.06.55 1.42.2 2.46.1 2.72.64.72 1.03 1.64 1.03 2.77 0 3.96-2.33 4.82-4.56 5.08.36.32.68.95.68 1.92 0 1.39-.01 2.5-.01 2.84 0 .27.18.59.69.49A10.26 10.26 0 0 0 22 12.22C22 6.58 17.52 2 12 2Z"></path>
+                  </svg>
+                </span>
+                            <span>GitHub</span>
+                        </a>
+                    </div>
+                </article>
+
+                <aside class="hero-card reveal" aria-label="调用观察面板">
+                    <div class="terminal">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <div style="margin-top: 0.65rem; opacity: 0.9;">
+                            $ ccecho run codex<br/>
+                            $ ccecho run claude<br/>
+                            $ ccecho view<br/>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <h3>接入很轻，回看很快</h3>
+                        <p style="margin-top: 0.45rem; color: var(--muted); line-height: 1.62;">
+                            不改变你原有的 CLI 工作流，
+                            只把请求、响应和会话过程自动沉淀下来，方便排障、复盘和对比分析。
+                        </p>
+                        <div class="kpi">
+                <div><strong>上手快</strong><span>几步就能开始</span></div>
+                            <div><strong>接入轻</strong><span>run 直接代理</span></div>
+                            <div><strong>可视化</strong><span>调用过程可视化</span></div>
+                        </div>
+                    </div>
+                </aside>
+            </div>
+        </section>
+
+        <section id="features" class="container">
+            <div class="section-title centered reveal">
+                <h2>产品特点</h2>
+                <p>不改你的工作习惯，只把看不见的调用过程转成可观测资产。</p>
+            </div>
+            <div class="feature-grid">
+                <article class="feature reveal">
+                    <h3>轻量CLI</h3>
+                    <p>单个本地可执行文件即可运行，不需要额外部署服务。</p>
+                </article>
+                <article class="feature reveal">
+                    <h3>调用可视化回看</h3>
+                    <p>统一查看请求体、响应体与会话上下文，快速定位问题在哪一轮出现。</p>
+                </article>
+                <article class="feature reveal">
+                    <h3>工作流零侵入接入</h3>
+                    <p>不替换你现有的 agent 和命令行工作流，只在原有调用链路上补上记录、回看与分析能力。</p>
+                </article>
+            </div>
+        </section>
+
+        <section id="viewer" class="container">
+            <div class="viewer-showcase">
+                <article class="viewer-copy reveal">
+                    <span class="viewer-kicker">Viewer Snapshot</span>
+                    <h3>把每次调用放进可视化界面里看</h3>
+                    <p>不只是保留日志文件，还能把请求、响应、流式内容和会话信息放到一个本地 viewer 里统一回看。</p>
+                    <ul class="viewer-points">
+                        <li>统一查看请求体、响应体、token 使用和原始 JSON。</li>
+                        <li>保留原有 CLI 工作方式，同时补上可视化观察入口。</li>
+                    </ul>
+                </article>
+                <figure class="viewer-frame reveal">
+                    <div class="viewer-badge top" aria-hidden="true">
+                        <strong>Viewer</strong>
+                        <span>Ready</span>
+                    </div>
+                    <div class="viewer-badge side" aria-hidden="true">
+                        <strong>Requests & Responses</strong>
+                        <span>Visualized in one place</span>
+                    </div>
+                    <img class="viewer-shot" src="./viewer.png" alt="ccecho viewer 截图，展示会话列表、请求列表与调用详情面板" />
+                </figure>
+            </div>
+        </section>
+
+        <section id="scenes" class="container">
+            <div class="section-title centered reveal">
+                <h2>适用场景与人群</h2>
+            </div>
+            <div class="split">
+                <article class="panel reveal">
+                    <h3>适用场景</h3>
+                    <ul>
+                        <li>排查模型效果不稳定、上下文漂移和工具调用异常。</li>
+                        <li>通过真实请求与响应学习 agent 的实现方式。</li>
+                        <li>观察关键命令与工具调用是否符合预期。</li>
+                        <li>复盘调用方式并分析 token 消耗与成本变化。</li>
+                    </ul>
+                </article>
+                <article class="panel reveal">
+                    <h3>适合人群</h3>
+                    <ul>
+                        <li>高频使用 Claude Code / Codex CLI 的个人开发者。</li>
+                        <li>需要定位真实请求与响应问题的工具链工程师。</li>
+                        <li>希望积累可回放会话样本的团队与平台成员。</li>
+                        <li>需要统一事实记录来做协作复盘的研发团队。</li>
+                    </ul>
+                </article>
+            </div>
+        </section>
+
+        <section id="contact" class="container">
+            <div class="cta reveal">
+                <div>
+                    <h3>让每次 agent 调用都可追踪、可复盘、可分析</h3>
+                    <p>保留现有 CLI 习惯，用轻量方式补上调用可视化与本地回放能力。</p>
+                </div>
+                <div class="cta-actions">
+                    <div class="download-pop upward" data-download-pop>
+                        <button class="btn btn-cta-download download-trigger" type="button" aria-haspopup="true"
+                                aria-expanded="false">
+                            下载
+                        </button>
+                        <div class="download-menu" role="menu">
+                            <a class="download-item" role="menuitem"
+                               href="../downloads/macos-intel/ccecho"><span>macOS</span><span>Intel</span></a>
+                            <a class="download-item" role="menuitem"
+                               href="../downloads/macos-apple/ccecho"><span>macOS</span><span>Apple</span></a>
+                            <a class="download-item" role="menuitem"
+                               href="../downloads/linux-x64/ccecho"><span>Linux</span><span>x64</span></a>
+                            <a class="download-item" role="menuitem"
+                               href="../downloads/linux-arm64/ccecho"><span>Linux</span><span>ARM64</span></a>
+                            <a class="download-item" role="menuitem" href="../downloads/windows-x64/ccecho.exe"><span>Windows</span><span>x64</span></a>
+                            <a class="download-item" role="menuitem" href="../downloads/windows-arm64/ccecho.exe"><span>Windows</span><span>ARM64</span></a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="container">
+        <p>© 2026 ccecho | local proxy + traffic viewer for Claude & Codex</p>
+    </footer>
+</div>
+
+<script>
+    const root = document.documentElement;
+    const initThemeToggle = () => {
+        const themeToggle = document.getElementById('themeToggle');
+        const themeText = document.getElementById('themeText');
+        const storageKey = 'ccecho-theme';
+        const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const savedTheme = localStorage.getItem(storageKey);
+        const initialTheme = savedTheme || (systemDark ? 'dark' : 'light');
+
+        root.setAttribute('data-theme', initialTheme);
+
+        // 让主题切换按钮的文案和 aria-label 与当前主题保持一致。
+        const syncThemeUI = (theme) => {
+            if (!themeText || !themeToggle) return;
+            const nextLabel = theme === 'dark' ? '浅色' : '暗黑';
+            themeText.textContent = nextLabel;
+            themeToggle.setAttribute('aria-label', theme === 'dark' ? '切换到浅色模式' : '切换到暗黑模式');
+        };
+
+        syncThemeUI(initialTheme);
+        if (!themeToggle) return;
+
+        // 切换主题时写入 localStorage，这样刷新后还能保持当前主题。
+        themeToggle.addEventListener('click', () => {
+            const current = root.getAttribute('data-theme') || 'light';
+            const next = current === 'dark' ? 'light' : 'dark';
+            root.setAttribute('data-theme', next);
+            localStorage.setItem(storageKey, next);
+            syncThemeUI(next);
+        });
+    };
+
+    const initRevealAnimations = () => {
+        const reveals = [...document.querySelectorAll('.reveal')];
+        if (!reveals.length) return;
+
+        // 元素第一次进入视口时，给它加上 visible 类触发入场动画。
+        const revealObserver = new IntersectionObserver(
+            (entries, observer) => {
+                entries.forEach((entry) => {
+                    if (!entry.isIntersecting) return;
+                    entry.target.classList.add('visible');
+                    observer.unobserve(entry.target);
+                });
+            },
+            {threshold: 0.16}
+        );
+
+        reveals.forEach((el, idx) => {
+            el.style.transitionDelay = `${Math.min(idx * 45, 260)}ms`;
+            revealObserver.observe(el);
+        });
+    };
+
+    const initScrollProgress = () => {
+        const progressBar = document.querySelector('.scroll-progress');
+        if (!progressBar) return;
+
+        // 根据页面滚动进度驱动顶部那条细进度条。
+        const updateProgress = () => {
+            const scrollTop = window.scrollY || document.documentElement.scrollTop;
+            const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
+            const progress = scrollHeight > 0 ? scrollTop / scrollHeight : 0;
+            progressBar.style.transform = `scaleX(${Math.min(Math.max(progress, 0), 1).toFixed(4)})`;
+        };
+
+        updateProgress();
+        window.addEventListener('scroll', updateProgress, {passive: true});
+        window.addEventListener('resize', updateProgress, {passive: true});
+    };
+
+    const initPointerParallax = () => {
+        if (!window.matchMedia('(prefers-reduced-motion: no-preference)').matches) return;
+
+        const aurora = document.querySelector('.aurora');
+        let pointerTargetX = 0;
+        let pointerTargetY = 0;
+        let pointerCurrentX = 0;
+        let pointerCurrentY = 0;
+        let pointerFrame = null;
+
+        // 根据鼠标位置缓动移动背景光斑和 aurora，让跟随感更柔和。
+        const renderPointerParallax = () => {
+            pointerCurrentX += (pointerTargetX - pointerCurrentX) * 0.05;
+            pointerCurrentY += (pointerTargetY - pointerCurrentY) * 0.05;
+
+            root.style.setProperty('--spot-x', `${((pointerCurrentX + 1) * 50).toFixed(2)}%`);
+            root.style.setProperty('--spot-y', `${((pointerCurrentY + 1) * 50).toFixed(2)}%`);
+
+            if (aurora) {
+                aurora.style.transform = `translate3d(${pointerCurrentX * 9}px, ${pointerCurrentY * 7}px, 0)`;
+            }
+
+            if (Math.abs(pointerTargetX - pointerCurrentX) < 0.001 && Math.abs(pointerTargetY - pointerCurrentY) < 0.001) {
+                pointerCurrentX = pointerTargetX;
+                pointerCurrentY = pointerTargetY;
+                pointerFrame = null;
+                return;
+            }
+
+            pointerFrame = window.requestAnimationFrame(renderPointerParallax);
+        };
+
+        const onPointerMove = (event) => {
+            pointerTargetX = (event.clientX / window.innerWidth - 0.5) * 2;
+            pointerTargetY = (event.clientY / window.innerHeight - 0.5) * 2;
+
+            if (pointerFrame !== null) return;
+            pointerFrame = window.requestAnimationFrame(renderPointerParallax);
+        };
+
+        window.addEventListener('pointermove', onPointerMove, {passive: true});
+    };
+
+    initThemeToggle();
+    initRevealAnimations();
+    initScrollProgress();
+    initPointerParallax();
+</script>
+</body>
+</html>

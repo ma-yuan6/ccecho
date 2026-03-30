@@ -100,7 +100,7 @@ func startProxy(app config.App, proxyAddr string, target config.Target, proxyCod
 	}
 
 	go func() {
-		log.Printf("[info] proxy listening on http://%s", proxyAddr)
+		//log.Printf("[info] proxy listening on http://%s", proxyAddr)
 		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("[error] proxy server: %v", err)
 		}

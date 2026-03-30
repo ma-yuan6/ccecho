@@ -32,7 +32,7 @@ ccecho run [claude|codex]
 ccecho view
 ```
 
-默认地址：http://127.0.0.1:18080
+默认地址：http://127.0.0.1:18888
 
 ## 从源码构建
 

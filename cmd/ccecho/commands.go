@@ -29,7 +29,7 @@ func runVersion() {
 
 func runProxy(args []string) {
 	fs := flag.NewFlagSet("proxy", flag.ExitOnError)
-	proxyAddr := fs.String("proxy-addr", "127.0.0.1:9999", "proxy listen address")
+	proxyAddr := fs.String("proxy-addr", "127.0.0.1:19999", "proxy listen address")
 	proxyCode := fs.String("proxy-code", "", "route code prefix for the proxy base URL")
 	provider := fs.String("provider", config.ProviderClaude, "proxy provider: claude or codex")
 	codexProvider := fs.String("codex-provider", "", "codex provider name from ~/.codex/config.toml")
@@ -73,7 +73,7 @@ func runRun(args []string) {
 // run claude
 func runClaude(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	proxyAddr := fs.String("proxy-addr", "127.0.0.1:9999", "proxy listen address")
+	proxyAddr := fs.String("proxy-addr", "127.0.0.1:19999", "proxy listen address")
 	proxyCode := fs.String("proxy-code", "", "route code prefix for the proxy base URL; empty means auto-generate")
 	_ = fs.Parse(args)
 
@@ -107,13 +107,12 @@ func runClaude(args []string) {
 		log.Fatal(err)
 	}
 
+	warnOnClaudeArgConflicts(fs.Args())
 	claudeArgs := append([]string{"--settings", settingsArg}, fs.Args()...)
 	cmd := exec.Command("claude", claudeArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-
-	log.Printf("starting: claude %s", strings.Join(claudeArgs, " "))
 
 	if err := cmd.Start(); err != nil {
 		shutdownProxy(context.Background(), server, store)
@@ -130,7 +129,7 @@ func runClaude(args []string) {
 // run codex
 func runCodex(args []string) {
 	fs := flag.NewFlagSet("run codex", flag.ExitOnError)
-	proxyAddr := fs.String("proxy-addr", "127.0.0.1:9999", "proxy listen address")
+	proxyAddr := fs.String("proxy-addr", "127.0.0.1:19999", "proxy listen address")
 	proxyCode := fs.String("proxy-code", "", "route code prefix for the proxy base URL; empty means auto-generate")
 	providerName := fs.String("provider", "", "codex provider name from ~/.codex/config.toml")
 	_ = fs.Parse(args)
@@ -140,15 +139,15 @@ func runCodex(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	codexConfig, err := app.LoadCodexConfig()
-	if err != nil {
-		log.Fatal(err)
-	}
+	//codexConfig, err := app.LoadCodexConfig()
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
 	// 将 codex 实际的provider取出
-	providerCfg, ok := codexConfig.ModelProviders[target.Name]
-	if !ok {
-		log.Fatalf("codex provider %q not found in %s", target.Name, app.CodexConfigPath())
-	}
+	//providerCfg, ok := codexConfig.ModelProviders[target.Name]
+	//if !ok {
+	//	log.Fatalf("codex provider %q not found in %s", target.Name, app.CodexConfigPath())
+	//}
 	resolvedProxyCode, err := ensureProxyCode(*proxyCode, true)
 	if err != nil {
 		log.Fatal(err)
@@ -169,13 +168,13 @@ func runCodex(args []string) {
 
 	printRunBanner(os.Stderr, session, runtimeLogFile.Name())
 
-	codexArgs := append(codexBaseURLOverrideArgs(target.Name, session.LocalBaseURL, providerCfg), fs.Args()...)
+	warnOnCodexArgConflicts(fs.Args(), target.Name)
+
+	codexArgs := append(codexBaseURLOverrideArgs(target.Name, session.LocalBaseURL), fs.Args()...)
 	cmd := exec.Command("codex", codexArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-
-	log.Printf("starting: codex %s", strings.Join(codexArgs, " "))
 
 	if err := cmd.Start(); err != nil {
 		shutdownProxy(context.Background(), server, store)
@@ -191,7 +190,7 @@ func runCodex(args []string) {
 
 func runView(args []string) {
 	fs := flag.NewFlagSet("view", flag.ExitOnError)
-	viewerAddr := fs.String("viewer-addr", "127.0.0.1:18080", "viewer listen address")
+	viewerAddr := fs.String("viewer-addr", "127.0.0.1:18888", "viewer listen address")
 	_ = fs.Parse(args)
 
 	app := mustApp()

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"claude-proxy-go/internal/config"
-	"claude-proxy-go/internal/sessionmeta"
+	"ccecho/internal/config"
+	"ccecho/internal/sessionmeta"
 )
 
 func TestSessionItemsSortByNumericIdx(t *testing.T) {

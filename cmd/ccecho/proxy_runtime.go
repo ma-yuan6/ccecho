@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"claude-proxy-go/internal/config"
-	"claude-proxy-go/internal/logstore"
-	"claude-proxy-go/internal/proxy"
-	"claude-proxy-go/internal/sessionmeta"
-	"claude-proxy-go/internal/state"
+	"ccecho/internal/config"
+	"ccecho/internal/logstore"
+	"ccecho/internal/proxy"
+	"ccecho/internal/sessionmeta"
+	"ccecho/internal/state"
 )
 
 // 一次会话 运行一次codex/claude

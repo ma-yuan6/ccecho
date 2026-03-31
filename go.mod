@@ -1,4 +1,4 @@
-module claude-proxy-go
+module ccecho
 
 go 1.24.0
 

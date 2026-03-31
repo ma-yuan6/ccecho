@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"claude-proxy-go/internal/config"
-	"claude-proxy-go/internal/logstore"
+	"ccecho/internal/config"
+	"ccecho/internal/logstore"
 )
 
 func waitForShutdown(stop func(ctx context.Context)) {

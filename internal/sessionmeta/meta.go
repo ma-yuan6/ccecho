@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"claude-proxy-go/internal/config"
+	"ccecho/internal/config"
 )
 
 const FileName = "meta.json"

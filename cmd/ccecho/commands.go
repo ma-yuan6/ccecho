@@ -14,9 +14,9 @@ import (
 	"sort"
 	"strings"
 
-	"claude-proxy-go/internal/config"
-	"claude-proxy-go/internal/state"
-	"claude-proxy-go/internal/viewer"
+	"ccecho/internal/config"
+	"ccecho/internal/state"
+	"ccecho/internal/viewer"
 )
 
 const version = "1.2.0"

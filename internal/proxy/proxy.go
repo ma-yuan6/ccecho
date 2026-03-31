@@ -12,9 +12,9 @@ import (
 	"net/url"
 	"strings"
 
-	"claude-proxy-go/internal/config"
-	"claude-proxy-go/internal/logstore"
-	"claude-proxy-go/internal/stream"
+	"ccecho/internal/config"
+	"ccecho/internal/logstore"
+	"ccecho/internal/stream"
 )
 
 type Server struct {

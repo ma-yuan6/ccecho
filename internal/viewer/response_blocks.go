@@ -3,7 +3,7 @@ package viewer
 import (
 	"encoding/json"
 
-	jsonutil "claude-proxy-go/internal/utils/json"
+	jsonutil "ccecho/internal/utils/json"
 )
 
 // renderResponseContentBlock 把不同 provider 的内容块尽量转换成可读文本。

@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"claude-proxy-go/internal/config"
-	jsonutil "claude-proxy-go/internal/utils/json"
+	"ccecho/internal/config"
+	jsonutil "ccecho/internal/utils/json"
 )
 
 // responseParser 定义了 provider 解析器统一实现的接口。

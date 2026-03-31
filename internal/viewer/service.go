@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"claude-proxy-go/internal/requestview"
-	"claude-proxy-go/internal/sessionmeta"
+	"ccecho/internal/requestview"
+	"ccecho/internal/sessionmeta"
 )
 
 // Service 提供日志会话查看页及对应的 JSON API。

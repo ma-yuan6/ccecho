@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-proxy-go/internal/config"
-	jsonutil "claude-proxy-go/internal/utils/json"
+	"ccecho/internal/config"
+	jsonutil "ccecho/internal/utils/json"
 )
 
 type usageTokens struct {

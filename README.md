@@ -1,5 +1,7 @@
 # ccecho
 
+[中文](./README.md) | [English](./README.en.md)
+
   为 Claude Code / Codex CLI 提供透明记录、调用可视化与本地回放的轻量 CLI。
 
 ## 产品介绍
